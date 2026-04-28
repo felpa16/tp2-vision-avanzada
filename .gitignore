@@ -5,6 +5,9 @@ __pycache__/
 
 # C extensions
 *.so
+data/MNIST
+checkpoints/best_protonet.pt
+data/mnist_m
 
 # Distribution / packaging
 .Python
