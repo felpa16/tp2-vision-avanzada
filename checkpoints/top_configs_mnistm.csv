@@ -1,0 +1,11 @@
+color_space,blur_method,bilateral_d,gaussian_ksize,use_clahe,polarity_margin,gridsearch_acc,k16_acc
+hsv,gaussian,5,3,False,0.3,0.536400,0.569000
+hsv,gaussian,5,3,False,0.2,0.527800,0.563150
+hsv,none,5,3,False,0.3,0.526200,0.560200
+hsv,bilateral,5,3,False,0.3,0.523800,0.556250
+hsv,none,5,3,False,0.2,0.517800,0.555450
+hsv,bilateral,9,3,False,0.3,0.519600,0.554250
+hsv,bilateral,5,3,False,0.2,0.513000,0.548650
+hsv,bilateral,9,3,False,0.2,0.511400,0.546850
+hsv,none,5,3,True,0.2,0.509800,0.544900
+hsv,none,5,3,True,0.3,0.512200,0.544800

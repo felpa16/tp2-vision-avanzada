@@ -1,0 +1,11 @@
+crop_size,color_space,blur_method,bilateral_d,gaussian_ksize,use_clahe,polarity_margin,gridsearch_acc,k16_acc
+32,hsv,gaussian,5,5,True,0.3,0.236000,0.273600
+32,hsv,gaussian,5,3,True,0.3,0.236800,0.271750
+26,hsv,gaussian,5,3,True,0.3,0.235600,0.270800
+26,gray,gaussian,5,3,True,0.3,0.232000,0.266050
+32,gray,gaussian,5,5,True,0.3,0.232400,0.265800
+26,hsv,gaussian,5,5,True,0.3,0.232400,0.265150
+32,gray,gaussian,5,3,True,0.3,0.230800,0.265050
+26,hsv,gaussian,5,3,True,0.2,0.231200,0.263550
+32,lab,gaussian,5,3,True,0.3,0.231600,0.258150
+32,gray,gaussian,5,5,True,0.2,0.231200,0.251800

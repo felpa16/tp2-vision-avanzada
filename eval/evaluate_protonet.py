@@ -21,7 +21,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torchvision import transforms
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from sklearn.manifold import TSNE
@@ -29,6 +28,7 @@ from sklearn.manifold import TSNE
 from models.protonet import ConvNetEncoder, compute_centroids, squared_euclidean_distance
 from data.prepare_datasets import load_mnist, load_svhn, load_mnistm
 from data.episodic_sampler import _build_class_map
+from data.preprocess import preprocess_mnistm, preprocess_svhn
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────
 
@@ -284,9 +284,9 @@ def plot_embedding_scatter(
 
     # ── Legend: two columns, one per domain ──
     # Column headers (bold domain labels, no marker)
-    header_mnist  = Line2D([], [], linestyle="none", marker="none",
+    header_mnist  = Line2D([], [], linestyle="None", marker="None",
                            label="MNIST (●)")
-    header_mnistm = Line2D([], [], linestyle="none", marker="none",
+    header_mnistm = Line2D([], [], linestyle="None", marker="None",
                            label="MNIST-M (▲)")
 
     mnist_handles, mnistm_handles = [header_mnist], [header_mnistm]
@@ -398,18 +398,13 @@ def main():
     print()
 
     # SVHN and MNIST-M images are RGB 32×32. The encoder was trained on
-    # grayscale 28×28 MNIST, so we convert them to match that format.
-    # Grayscale conversion uses the standard luminance formula:
-    #   L = 0.299·R + 0.587·G + 0.114·B  (same as PIL and torchvision)
-    rgb_to_gray = transforms.Compose([
-        transforms.Grayscale(num_output_channels=1),
-        transforms.Resize((28, 28), antialias=True),
-    ])
-
+    # grayscale 28×28 MNIST, so we apply domain-specific preprocessing
+    # pipelines that binarise and normalise polarity to match MNIST
+    # (white digit on black background).
     datasets = {
-        "MNIST":   (mnist_test,  None),          # already 1×28×28
-        "MNIST-M": (mnistm_test, rgb_to_gray),   # RGB 32×32 → gray 28×28
-        "SVHN":    (svhn_test,   rgb_to_gray),   # RGB 32×32 → gray 28×28
+        "MNIST":   (mnist_test,  None),                # already 1×28×28
+        "MNIST-M": (mnistm_test, preprocess_mnistm),   # texture removal pipeline
+        "SVHN":    (svhn_test,   preprocess_svhn),      # real-world photo pipeline
     }
 
     # ── Evaluate ──
@@ -460,7 +455,7 @@ def main():
     )
     mnistm_emb, mnistm_lbl = collect_domain_embeddings(
         encoder, mnistm_test, args.n_embed, device,
-        preprocess=rgb_to_gray, seed=args.seed,
+        preprocess=preprocess_mnistm, seed=args.seed,
     )
     plot_embedding_scatter(
         mnist_emb, mnist_lbl, mnistm_emb, mnistm_lbl,
