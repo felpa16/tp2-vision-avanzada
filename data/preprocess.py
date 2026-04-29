@@ -224,3 +224,149 @@ def preprocess_svhn(
 
     # 6. Resize to 28x28 and return
     return _uint8_gray_to_tensor(gray)
+
+
+# ── Pipeline visualization ──────────────────────────────────────────────────
+
+def _collect_mnistm_steps(img: torch.Tensor) -> list[tuple[str, np.ndarray]]:
+    """Return (title, uint8_image) for each step of the MNIST-M pipeline."""
+    rgb = _tensor_to_uint8(img)
+    steps = [("Original RGB", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))]
+
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    bgr = _apply_blur(bgr, MNISTM_BLUR_METHOD, MNISTM_BILATERAL_D,
+                       MNISTM_BILATERAL_SIGMA_CLR, MNISTM_BILATERAL_SIGMA_SPC,
+                       MNISTM_GAUSSIAN_KSIZE)
+    steps.append((f"Blur ({MNISTM_BLUR_METHOD})", bgr.copy()))
+
+    gray = _extract_luminance(bgr, MNISTM_COLOR_SPACE)
+    steps.append((f"Luminance ({MNISTM_COLOR_SPACE.upper()})", gray.copy()))
+
+    if MNISTM_USE_CLAHE:
+        clahe = cv2.createCLAHE(clipLimit=MNISTM_CLAHE_CLIP, tileGridSize=MNISTM_CLAHE_GRID)
+        gray = clahe.apply(gray)
+        steps.append(("CLAHE", gray.copy()))
+
+    gray = _ensure_white_on_black(gray, MNISTM_POLARITY_MARGIN)
+    steps.append(("Polarity fix", gray.copy()))
+
+    resized = cv2.resize(gray, (28, 28), interpolation=cv2.INTER_AREA)
+    steps.append(("Resize 28x28", resized))
+
+    return steps
+
+
+def _collect_svhn_steps(img: torch.Tensor) -> list[tuple[str, np.ndarray]]:
+    """Return (title, uint8_image) for each step of the SVHN pipeline."""
+    rgb = _tensor_to_uint8(img)
+    steps = [("Original RGB", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))]
+
+    h, w = rgb.shape[:2]
+    y0 = (h - SVHN_CROP_SIZE) // 2
+    x0 = (w - SVHN_CROP_SIZE) // 2
+    rgb = rgb[y0:y0 + SVHN_CROP_SIZE, x0:x0 + SVHN_CROP_SIZE]
+    steps.append((f"Center crop {SVHN_CROP_SIZE}x{SVHN_CROP_SIZE}",
+                  cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)))
+
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    bgr = _apply_blur(bgr, SVHN_BLUR_METHOD, SVHN_BILATERAL_D,
+                       SVHN_BILATERAL_SIGMA_CLR, SVHN_BILATERAL_SIGMA_SPC,
+                       SVHN_GAUSSIAN_KSIZE)
+    steps.append((f"Blur ({SVHN_BLUR_METHOD})", bgr.copy()))
+
+    gray = _extract_luminance(bgr, SVHN_COLOR_SPACE)
+    steps.append((f"Luminance ({SVHN_COLOR_SPACE.upper()})", gray.copy()))
+
+    if SVHN_USE_CLAHE:
+        clahe = cv2.createCLAHE(clipLimit=SVHN_CLAHE_CLIP, tileGridSize=SVHN_CLAHE_GRID)
+        gray = clahe.apply(gray)
+        steps.append(("CLAHE", gray.copy()))
+
+    gray = _ensure_white_on_black(gray, SVHN_POLARITY_MARGIN)
+    steps.append(("Polarity fix", gray.copy()))
+
+    resized = cv2.resize(gray, (28, 28), interpolation=cv2.INTER_AREA)
+    steps.append(("Resize 28x28", resized))
+
+    return steps
+
+
+def save_pipeline_examples(
+    mnistm_dataset,
+    svhn_dataset,
+    n_examples: int = 10,
+    save_dir: str = "checkpoints",
+    seed: int = 42,
+) -> None:
+    """
+    Save side-by-side images showing each preprocessing step for random
+    samples from MNIST-M and SVHN.
+
+    Generates two PNG files:
+      - <save_dir>/pipeline_mnistm.png
+      - <save_dir>/pipeline_svhn.png
+
+    Each image is a grid: rows = samples, columns = pipeline steps.
+    """
+    import matplotlib.pyplot as plt
+    import random as _random
+    from pathlib import Path
+
+    rng = _random.Random(seed)
+    out = Path(save_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    for ds_name, dataset, step_fn in [
+        ("mnistm", mnistm_dataset, _collect_mnistm_steps),
+        ("svhn",   svhn_dataset,   _collect_svhn_steps),
+    ]:
+        indices = rng.sample(range(len(dataset)), n_examples)
+
+        # Collect all steps for all samples to find column count
+        all_rows = []
+        for idx in indices:
+            img, label = dataset[idx]
+            steps = step_fn(img)
+            all_rows.append((label, steps))
+
+        n_cols = max(len(steps) for _, steps in all_rows)
+
+        fig, axes = plt.subplots(n_examples, n_cols,
+                                 figsize=(2.5 * n_cols, 2.5 * n_examples))
+        if n_examples == 1:
+            axes = [axes]
+
+        for row_idx, (label, steps) in enumerate(all_rows):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx][col_idx]
+                if col_idx < len(steps):
+                    title, im = steps[col_idx]
+                    if im.ndim == 3:
+                        ax.imshow(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+                    else:
+                        ax.imshow(im, cmap="gray", vmin=0, vmax=255)
+                    if row_idx == 0:
+                        ax.set_title(title, fontsize=9)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if col_idx == 0:
+                    ax.set_ylabel(f"Label {label}", fontsize=9)
+
+        fig.suptitle(f"Preprocessing pipeline: {ds_name.upper()}", fontsize=13, y=1.01)
+        fig.tight_layout()
+        path = out / f"pipeline_{ds_name}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Pipeline visualization saved to: {path}")
+
+
+# ── CLI entry point ─────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    from data.prepare_datasets import load_mnistm, load_svhn
+
+    print("Loading datasets ...")
+    _, mnistm_val, _ = load_mnistm()
+    svhn_val, _      = load_svhn()
+
+    save_pipeline_examples(mnistm_val, svhn_val)

@@ -46,11 +46,16 @@ def _get_targets(dataset: Dataset) -> list[int]:
       • torchvision datasets  (have a .targets attribute)
       • Subset wrapping any of the above
       • MNISTMDataset         (stores labels in .samples)
+      • PreprocessedDataset   (has .dataset but no .indices)
       • Any dataset whose underlying base has .targets or .samples
     """
-    # Unwrap nested Subsets to reach the base dataset
+    # Unwrap wrappers that have a .dataset attribute but no .indices
+    # (e.g. PreprocessedDataset) — they preserve labels as-is.
     base    = dataset
     indices = None
+
+    while hasattr(base, "dataset") and not isinstance(base, Subset):
+        base = base.dataset
 
     while isinstance(base, Subset):
         if indices is None:
@@ -285,7 +290,7 @@ if __name__ == "__main__":
     print(f"  classes in episode : {q_lbls[0].unique().tolist()}\n")
 
     # ── MNIST-M (train split) ──
-    mnistm_val, mnistm_test = load_mnistm()
+    _, mnistm_val, mnistm_test = load_mnistm()
 
     mnistm_loader = build_episode_loader(
         dataset    = mnistm_test,

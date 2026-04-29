@@ -265,7 +265,7 @@ def main():
     print("\nLoading datasets ...")
     _, _, _             = load_mnist()
     svhn_val, _         = load_svhn()
-    mnistm_val, _       = load_mnistm()
+    _, mnistm_val, _    = load_mnistm()
 
     save_dir = Path(args.save_dir)
 

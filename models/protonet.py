@@ -30,8 +30,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from sklearn.manifold import TSNE
 
-from data.prepare_datasets import load_mnist
+from data.prepare_datasets import load_mnist, load_mnistm
 from data.episodic_sampler import build_episode_loader, _build_class_map
+from data.preprocess import preprocess_mnistm
 
 
 # ── Encoder ───────────────────────────────────────────────────────────────────
@@ -341,7 +342,10 @@ def plot_val_accuracy(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
-    p = argparse.ArgumentParser(description="ProtoNet training on MNIST")
+    p = argparse.ArgumentParser(description="ProtoNet training on MNIST or MNIST-M")
+    p.add_argument("--dataset",          type=str,   default="mnist",
+                   choices=["mnist", "mnistm", "both"],
+                   help="Dataset to train on (default: mnist)")
     p.add_argument("--n_way",            type=int,   default=5)
     p.add_argument("--k_shot",           type=int,   default=5)
     p.add_argument("--q_query",          type=int,   default=15)
@@ -359,22 +363,38 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args   = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device : {device}")
-    print(f"Config : {args.n_way}-way  {args.k_shot}-shot  {args.q_query}-query\n")
+class PreprocessedDataset:
+    """
+    Wraps a dataset and applies a preprocessing function to each image.
+
+    This is used to convert MNIST-M (RGB 32x32) to grayscale 28x28 on-the-fly
+    so the episodic sampler sees images compatible with the encoder.
+    """
+
+    def __init__(self, dataset, preprocess_fn):
+        self.dataset       = dataset
+        self.preprocess_fn = preprocess_fn
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        img, label = self.dataset[idx]
+        return self.preprocess_fn(img), label
+
+
+def train_one(dataset_name: str, train_data, val_data, ckpt_name: str, args, device, save_dir):
+    """Train a single ProtoNet encoder on the given dataset."""
+    print(f"\n{'='*60}")
+    print(f"  Training on {dataset_name}")
+    print(f"  {args.n_way}-way  {args.k_shot}-shot  {args.q_query}-query")
+    print(f"  Checkpoint: {ckpt_name}")
+    print(f"{'='*60}\n")
 
     torch.manual_seed(args.seed)
 
-    save_dir = Path(args.save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── Data ──
-    mnist_train, mnist_val, _ = load_mnist()
-
     train_loader = build_episode_loader(
-        dataset    = mnist_train,
+        dataset    = train_data,
         n_episodes = args.n_train_episodes,
         n_way      = args.n_way,
         k_shot     = args.k_shot,
@@ -382,7 +402,7 @@ def main():
         seed       = args.seed,
     )
     val_loader = build_episode_loader(
-        dataset    = mnist_val,
+        dataset    = val_data,
         n_episodes = args.n_val_episodes,
         n_way      = args.n_way,
         k_shot     = args.k_shot,
@@ -390,17 +410,14 @@ def main():
         seed       = args.seed + 1,
     )
 
-    # Fixed validation images for t-SNE — sampled once, reused at all checkpoints
-    # so the three panels are directly comparable (same images, different encoder)
     tsne_images, tsne_labels = sample_tsne_images(
-        mnist_val,
+        val_data,
         n_per_class = args.tsne_per_class,
         seed        = args.seed,
     )
     mid_epoch      = args.epochs // 2
-    tsne_snapshots = []   # (title, xy, labels) filled at epochs 0, mid, final
+    tsne_snapshots = []
 
-    # ── Model, optimiser, scheduler ──
     encoder   = ConvNetEncoder(in_channels=1, hidden_dim=args.hidden_dim).to(device)
     optimizer = Adam(encoder.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=args.lr_step, gamma=args.lr_gamma)
@@ -408,12 +425,10 @@ def main():
     total_params = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
     print(f"Encoder parameters: {total_params:,}\n")
 
-    # ── t-SNE snapshot: before training ──
     print("Computing t-SNE snapshot — before training …")
     emb = collect_embeddings(encoder, tsne_images, device)
     tsne_snapshots.append(("Before training (epoch 0)", run_tsne(emb, args.seed), tsne_labels))
 
-    # ── Training loop ──
     best_val_acc      = 0.0
     val_q_acc_history = []
 
@@ -449,7 +464,6 @@ def main():
             f"{current_lr:>8.2e}"
         )
 
-        # ── t-SNE snapshot: midpoint ──
         if epoch == mid_epoch:
             print(f"Computing t-SNE snapshot — epoch {epoch} (mid) …")
             emb = collect_embeddings(encoder, tsne_images, device)
@@ -457,7 +471,6 @@ def main():
                 (f"Epoch {epoch} (mid)", run_tsne(emb, args.seed), tsne_labels)
             )
 
-        # ── Best checkpoint ──
         if va_q_acc > best_val_acc:
             best_val_acc = va_q_acc
             ckpt = {
@@ -470,30 +483,40 @@ def main():
                 "optimizer":  optimizer.state_dict(),
                 "args":       vars(args),
             }
-            torch.save(ckpt, save_dir / "best_protonet.pt")
+            torch.save(ckpt, save_dir / ckpt_name)
 
     print("─" * len(header))
     print(f"Training complete. Best val query acc: {best_val_acc*100:.2f}%")
-    print(f"Best checkpoint saved to: {save_dir / 'best_protonet.pt'}")
+    print(f"Best checkpoint saved to: {save_dir / ckpt_name}")
 
-    # # ── t-SNE snapshot: final epoch ──
-    # print(f"Computing t-SNE snapshot — epoch {args.epochs} (final) …")
-    # emb = collect_embeddings(encoder, tsne_images, device)
-    # tsne_snapshots.append(
-    #     (f"Epoch {args.epochs} (final)", run_tsne(emb, args.seed), tsne_labels)
-    # )
 
-    # # ── Save plots ──
-    # print(f"Worst accuracy: {worst_acc}")
-    # plot_val_accuracy(
-    #     val_q_acc_history,
-    #     save_dir / "val_query_accuracy.png",
-    #     args.n_way,
-    #     args.k_shot,
-    #     args.n_train_episodes,
-    #     worst_acc
-    # )
-    # plot_tsne_grid(tsne_snapshots, save_dir / "tsne_embeddings.png")
+def main():
+    args   = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device  : {device}")
+    print(f"Dataset : {args.dataset}")
+
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    datasets_to_train = (
+        ["mnist", "mnistm"] if args.dataset == "both"
+        else [args.dataset]
+    )
+
+    for ds in datasets_to_train:
+        if ds == "mnist":
+            mnist_train, mnist_val, _ = load_mnist()
+            train_one("MNIST", mnist_train, mnist_val,
+                      "best_protonet.pt", args, device, save_dir)
+        else:
+            mnistm_train, mnistm_val, _ = load_mnistm()
+            train_one("MNIST-M",
+                      PreprocessedDataset(mnistm_train, preprocess_mnistm),
+                      PreprocessedDataset(mnistm_val,   preprocess_mnistm),
+                      "best_protonet_mnistm.pt", args, device, save_dir)
+
+    print("\nAll training complete.")
 
 
 if __name__ == "__main__":

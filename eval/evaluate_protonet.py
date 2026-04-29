@@ -1,7 +1,12 @@
 """
-Cross-domain evaluation of a trained ProtoNet.
+Cross-domain evaluation of trained ProtoNet models.
 
-For each dataset (MNIST, MNIST-M, SVHN) and each value of K in {1,2,4,8,16}:
+Evaluates two models:
+  1. Encoder trained on MNIST        (best_protonet.pt)
+  2. Encoder trained on MNIST-M      (best_protonet_mnistm.pt)
+
+For each model and each dataset (MNIST, MNIST-M, SVHN) and each K in
+{1,2,4,8,16}:
   1. Build a support set of K images per class (10 classes, so N=10-way).
   2. Compute class centroids from the support embeddings.
   3. Sample 10 query images per class, classify by nearest centroid.
@@ -12,7 +17,10 @@ sampling variance, then plotted as accuracy vs K with one line per dataset.
 
 Saved artefacts
 ---------------
-  checkpoints/cross_domain_accuracy.png
+  checkpoints/cross_domain_accuracy_mnist.png
+  checkpoints/cross_domain_accuracy_mnistm.png
+  checkpoints/embedding_scatter_mnist.png
+  checkpoints/embedding_scatter_mnistm.png
 """
 
 import argparse
@@ -156,6 +164,7 @@ def plot_cross_domain(
     save_path: Path,
     n_query: int,
     n_way: int,
+    model_name: str = "",
 ) -> None:
     """
     Line plot of accuracy vs K with one line per dataset.
@@ -186,11 +195,11 @@ def plot_cross_domain(
     ax.set_xlabel("K  (support images per class)", fontsize=13)
     ax.set_ylabel("Accuracy (%)", fontsize=13)
     ax.set_ylim(0, 100)
-    ax.set_title(
-        f"Cross-Domain ProtoNet Accuracy\n"
-        f"{n_way}-way,  {n_query} query images per class",
-        fontsize=13,
-    )
+    title = f"Cross-Domain ProtoNet Accuracy"
+    if model_name:
+        title += f" — trained on {model_name}"
+    title += f"\n{n_way}-way,  {n_query} query images per class"
+    ax.set_title(title, fontsize=13)
     ax.legend(fontsize=11)
     ax.grid(True, linestyle="--", alpha=0.5)
     fig.tight_layout()
@@ -346,71 +355,36 @@ def plot_embedding_scatter(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description="Cross-domain ProtoNet evaluation (MNIST / MNIST-M / SVHN)"
-    )
-    p.add_argument("--checkpoint",  type=str, default="checkpoints/best_protonet.pt")
-    p.add_argument("--n_way",       type=int, default=10,
-                   help="Number of classes per episode (default: 10 — all MNIST classes)")
-    p.add_argument("--n_query",     type=int, default=10,
-                   help="Query images per class per episode")
-    p.add_argument("--n_episodes",  type=int, default=100,
-                   help="Episodes per (dataset, K) pair — more = lower variance")
-    p.add_argument("--k_values",    type=int, nargs="+", default=[1, 2, 4, 8, 16])
-    p.add_argument("--n_embed",     type=int, default=20,
-                   help="Images per class used for the embedding scatter plot")
-    p.add_argument("--save_dir",    type=str, default="checkpoints")
-    p.add_argument("--seed",        type=int, default=42)
-    return p.parse_args()
-
-
-def main():
-    args   = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device     : {device}")
-    print(f"Checkpoint : {args.checkpoint}")
-    print(f"Config     : {args.n_way}-way  |  K ∈ {args.k_values}  |  "
-          f"{args.n_query} queries/class  |  {args.n_episodes} episodes\n")
-
-    # ── Load checkpoint ──
-    ckpt_path = Path(args.checkpoint)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-    ckpt        = torch.load(ckpt_path, map_location=device)
-    hidden_dim  = ckpt["args"].get("hidden_dim", 64)
-    in_channels = 1   # encoder was trained on grayscale MNIST
-
-    encoder = ConvNetEncoder(in_channels=in_channels, hidden_dim=hidden_dim).to(device)
+def load_encoder(ckpt_path: Path, device: torch.device) -> ConvNetEncoder:
+    """Load an encoder from a checkpoint file."""
+    ckpt       = torch.load(ckpt_path, map_location=device)
+    hidden_dim = ckpt["args"].get("hidden_dim", 64)
+    encoder    = ConvNetEncoder(in_channels=1, hidden_dim=hidden_dim).to(device)
     encoder.load_state_dict(ckpt["model"])
     encoder.eval()
+    print(f"  Loaded from epoch {ckpt['epoch']}  "
+          f"(val query acc: {ckpt['val_q_acc']*100:.2f}%)")
+    return encoder
 
-    print(f"Loaded encoder from epoch {ckpt['epoch']}  "
-          f"(val query acc: {ckpt['val_q_acc']*100:.2f}%)\n")
 
-    # ── Load datasets ──
-    # Use the test splits for unbiased evaluation.
-    print("Loading datasets …")
-    _, mnist_val,  mnist_test  = load_mnist()
-    svhn_val,      svhn_test   = load_svhn()
-    mnistm_val, mnistm_test = load_mnistm()
-    print()
+def run_evaluation(
+    model_name: str,
+    encoder: ConvNetEncoder,
+    test_datasets: dict,
+    args,
+    device: torch.device,
+    save_dir: Path,
+    mnist_test,
+    mnistm_test,
+) -> dict[str, dict[int, float]]:
+    """Run cross-domain evaluation for a single encoder."""
+    print(f"\n{'='*60}")
+    print(f"  Evaluating encoder trained on {model_name}")
+    print(f"{'='*60}\n")
 
-    # SVHN and MNIST-M images are RGB 32×32. The encoder was trained on
-    # grayscale 28×28 MNIST, so we apply domain-specific preprocessing
-    # pipelines that binarise and normalise polarity to match MNIST
-    # (white digit on black background).
-    datasets = {
-        "MNIST":   (mnist_test,  None),                # already 1×28×28
-        "MNIST-M": (mnistm_test, preprocess_mnistm),   # texture removal pipeline
-        "SVHN":    (svhn_test,   preprocess_svhn),      # real-world photo pipeline
-    }
-
-    # ── Evaluate ──
     all_results: dict[str, dict[int, float]] = {}
 
-    for name, (dataset, preprocess) in datasets.items():
+    for name, (dataset, preprocess) in test_datasets.items():
         print(f"[{name}]")
         all_results[name] = evaluate_dataset(
             encoder      = encoder,
@@ -430,7 +404,7 @@ def main():
     col_w = 10
     header = f"{'Dataset':<10}" + "".join(f"  K={k:<{col_w-3}}" for k in args.k_values)
     print(header)
-    print("─" * len(header))
+    print("-" * len(header))
     for name, acc_by_k in all_results.items():
         row = f"{name:<10}" + "".join(
             f"  {acc_by_k[k]*100:>{col_w-2}.2f}%" for k in args.k_values
@@ -438,20 +412,21 @@ def main():
         print(row)
 
     # ── Plot: accuracy vs K ──
-    save_path = Path(args.save_dir) / "cross_domain_accuracy.png"
+    suffix = model_name.lower().replace("-", "")
     plot_cross_domain(
         results    = all_results,
         k_values   = args.k_values,
-        save_path  = save_path,
+        save_path  = save_dir / f"cross_domain_accuracy_{suffix}.png",
         n_query    = args.n_query,
         n_way      = args.n_way,
+        model_name = model_name,
     )
 
     # ── Plot: embedding scatter (MNIST vs MNIST-M) ──
-    print(f"\nCollecting embeddings for scatter plot ({args.n_embed} images/class) …")
+    print(f"\nCollecting embeddings for scatter plot ({args.n_embed} images/class) ...")
     mnist_emb,  mnist_lbl  = collect_domain_embeddings(
         encoder, mnist_test,  args.n_embed, device,
-        preprocess=None,       seed=args.seed,
+        preprocess=None, seed=args.seed,
     )
     mnistm_emb, mnistm_lbl = collect_domain_embeddings(
         encoder, mnistm_test, args.n_embed, device,
@@ -459,9 +434,88 @@ def main():
     )
     plot_embedding_scatter(
         mnist_emb, mnist_lbl, mnistm_emb, mnistm_lbl,
-        save_path = Path(args.save_dir) / "embedding_scatter.png",
+        save_path = save_dir / f"embedding_scatter_{suffix}.png",
         seed      = args.seed,
     )
+
+    return all_results
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Cross-domain ProtoNet evaluation (MNIST / MNIST-M / SVHN)"
+    )
+    p.add_argument("--checkpoint_mnist",  type=str,
+                   default="checkpoints/best_protonet.pt",
+                   help="Checkpoint for the model trained on MNIST")
+    p.add_argument("--checkpoint_mnistm", type=str,
+                   default="checkpoints/best_protonet_mnistm.pt",
+                   help="Checkpoint for the model trained on MNIST-M")
+    p.add_argument("--n_way",       type=int, default=10,
+                   help="Number of classes per episode (default: 10 -- all MNIST classes)")
+    p.add_argument("--n_query",     type=int, default=10,
+                   help="Query images per class per episode")
+    p.add_argument("--n_episodes",  type=int, default=100,
+                   help="Episodes per (dataset, K) pair -- more = lower variance")
+    p.add_argument("--k_values",    type=int, nargs="+", default=[1, 2, 4, 8, 16])
+    p.add_argument("--n_embed",     type=int, default=20,
+                   help="Images per class used for the embedding scatter plot")
+    p.add_argument("--save_dir",    type=str, default="checkpoints")
+    p.add_argument("--seed",        type=int, default=42)
+    return p.parse_args()
+
+
+def main():
+    args   = parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    save_dir = Path(args.save_dir)
+
+    print(f"Device : {device}")
+    print(f"Config : {args.n_way}-way  |  K = {args.k_values}  |  "
+          f"{args.n_query} queries/class  |  {args.n_episodes} episodes\n")
+
+    # ── Load datasets ──
+    print("Loading datasets ...")
+    _, mnist_val, mnist_test     = load_mnist()
+    svhn_val,     svhn_test      = load_svhn()
+    _, mnistm_val, mnistm_test   = load_mnistm()
+    print()
+
+    # SVHN and MNIST-M images are RGB 32x32, preprocessed to grayscale 28x28.
+    test_datasets = {
+        "MNIST":   (mnist_test,  None),
+        "MNIST-M": (mnistm_test, preprocess_mnistm),
+        "SVHN":    (svhn_test,   preprocess_svhn),
+    }
+
+    # ── Evaluate each model ──
+    models = [
+        ("MNIST",   Path(args.checkpoint_mnist)),
+        ("MNIST-M", Path(args.checkpoint_mnistm)),
+    ]
+
+    for model_name, ckpt_path in models:
+        if not ckpt_path.exists():
+            ds_flag = "mnist" if model_name == "MNIST" else "mnistm"
+            print(f"\nWARNING: {ckpt_path} not found -- skipping {model_name} model.")
+            print(f"  Train with: python -m models.protonet --dataset {ds_flag}")
+            continue
+
+        print(f"\nLoading {model_name} encoder from {ckpt_path}")
+        encoder = load_encoder(ckpt_path, device)
+
+        run_evaluation(
+            model_name     = model_name,
+            encoder        = encoder,
+            test_datasets  = test_datasets,
+            args           = args,
+            device         = device,
+            save_dir       = save_dir,
+            mnist_test     = mnist_test,
+            mnistm_test    = mnistm_test,
+        )
+
+    print("\nAll evaluations complete.")
 
 
 if __name__ == "__main__":

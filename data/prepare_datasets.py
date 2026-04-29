@@ -182,7 +182,8 @@ def load_mnistm(data_dir: str = DATA_DIR):
     Loads MNIST-M from a flat-folder + label-file layout and returns
     (train_set, val_set, test_set).
 
-    Adjust the folder / label-file names below to match yours.
+    The 60 000-sample training split is divided into 50 000 train and
+    10 000 validation samples.  The test split is kept as-is.
     """
     mnistm_dir = Path(data_dir) / "mnist_m"
 
@@ -192,21 +193,26 @@ def load_mnistm(data_dir: str = DATA_DIR):
     test_img_dir   = mnistm_dir / "mnist_m_test"
     test_lbl_file  = mnistm_dir / "mnist_m_test_labels.txt"
 
+    full_train = MNISTMDataset(train_img_dir, train_lbl_file, transform=mnistm_transform)
     test_set   = MNISTMDataset(test_img_dir,  test_lbl_file,  transform=mnistm_transform)
-    test_set_size = len(test_set)
 
-    generator = torch.Generator().manual_seed(SEED)
-    new_test_set, val_set = random_split(
-        test_set,
-        [test_set_size - MNISTM_VAL_SIZE, MNISTM_VAL_SIZE],
+    total     = len(full_train)
+    val_size  = min(MNISTM_VAL_SIZE, total // 5)   # at most 20% for val
+    train_size = total - val_size
+
+    generator  = torch.Generator().manual_seed(SEED)
+    train_set, val_set = random_split(
+        full_train,
+        [train_size, val_size],
         generator=generator,
     )
 
     print(
-        f"[MNIST-M] test={len(new_test_set):>6,} | "
-        f"val={len(val_set):>6,}"
+        f"[MNIST-M] train={len(train_set):>6,} | "
+        f"val={len(val_set):>6,} | "
+        f"test={len(test_set):>6,}"
     )
-    return val_set, new_test_set
+    return train_set, val_set, test_set
 
 
 # ── DataLoaders ───────────────────────────────────────────────────────────────
@@ -218,9 +224,9 @@ def make_loaders(
     batch_size: int = BATCH_SIZE,
 ) -> dict:
     """Wraps every split in a DataLoader and returns them in a dict."""
-    mnist_train,  mnist_val,  mnist_test  = mnist_splits
-    svhn_val,     svhn_test               = svhn_splits
-    mnistm_val, mnistm_test               = mnistm_splits
+    mnist_train,  mnist_val,  mnist_test   = mnist_splits
+    svhn_val,     svhn_test                = svhn_splits
+    mnistm_train, mnistm_val, mnistm_test  = mnistm_splits
 
     loaders = {
         "mnist_train":  DataLoader(mnist_train,  batch_size=batch_size,
@@ -233,6 +239,8 @@ def make_loaders(
                                    shuffle=False, num_workers=2),
         "svhn_test":    DataLoader(svhn_test,    batch_size=batch_size,
                                    shuffle=False, num_workers=2),
+        "mnistm_train": DataLoader(mnistm_train, batch_size=batch_size,
+                                   shuffle=True,  num_workers=2),
         "mnistm_val":   DataLoader(mnistm_val,   batch_size=batch_size,
                                    shuffle=False, num_workers=2),
         "mnistm_test":  DataLoader(mnistm_test,  batch_size=batch_size,
